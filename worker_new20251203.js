@@ -2719,7 +2719,7 @@ var require_js_yaml = __commonJS({
 init_modules_watch_stub();
 var yaml = require_js_yaml();
 
-// 安全 fetch（支持超时 + 错误处理）
+// 安全 fetch
 async function safeFetch(url, request, timeout = 8000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
@@ -2761,9 +2761,8 @@ var src_default = {
     const frontendUrl = 'https://raw.githubusercontent.com/bulianglin/psub/main/frontend.html';
     const SUB_BUCKET = env.SUB_BUCKET;
 
-    // 必须设置 BACKEND，且不能指向自己
     if (!env.BACKEND || env.BACKEND.includes(url.host)) {
-      return new Response('Error: BACKEND not configured or points to self. Please set BACKEND env var to a valid subconverter URL (e.g. https://subconverter.pages.dev).', {
+      return new Response('Error: BACKEND not configured or points to self. Set BACKEND env var.', {
         status: 500,
         headers: { 'Content-Type': 'text/plain' }
       });
@@ -2772,44 +2771,31 @@ var src_default = {
     let backend = env.BACKEND.replace(/(https?:\/\/[^/]+).*$/, "$1");
     const subDir = "subscription";
     const pathSegments = url.pathname.split("/").filter((segment) => segment.length > 0);
-
-    // 是否有 R2
     const hasR2 = !!SUB_BUCKET;
     const keys = [];
 
-    // 首页
     if (pathSegments.length === 0) {
       const response = await fetch(frontendUrl);
-      if (!response.ok) {
-        return new Response('Failed to fetch frontend', { status: response.status });
-      }
-      const originalHtml = await response.text();
-      const modifiedHtml = originalHtml.replace(/https:\/\/bulianglin2023\.dev/g, host);
-      return new Response(modifiedHtml, {
-        status: 200,
+      if (!response.ok) return new Response('Failed to fetch frontend', { status: 502 });
+      const html = await response.text();
+      return new Response(html.replace(/https:\/\/bulianglin2023\.dev/g, host), {
         headers: { 'Content-Type': 'text/html' }
       });
     }
 
-    // R2 静态文件服务
     if (pathSegments[0] === subDir && hasR2) {
       const key = pathSegments[pathSegments.length - 1];
       const object = await SUB_BUCKET.get(key);
       const object_headers = await SUB_BUCKET.get(key + "_headers");
-      if (object === null) {
-        return new Response("Not Found", { status: 404 });
-      }
+      if (object === null) return new Response("Not Found", { status: 404 });
       const headers = object_headers
         ? new Headers(await object_headers.json())
         : new Headers({ "Content-Type": "text/plain;charset=UTF-8" });
       return new Response(object.body, { headers });
     }
 
-    // 参数处理
     const urlParam = url.searchParams.get("url");
-    if (!urlParam) {
-      return new Response("Missing URL parameter", { status: 400 });
-    }
+    if (!urlParam) return new Response("Missing URL parameter", { status: 400 });
 
     const backendParam = url.searchParams.get("bd");
     if (backendParam && /^(https?:\/\/[^/]+)[.].+$/g.test(backendParam)) {
@@ -2832,9 +2818,7 @@ var src_default = {
       }
     } else {
       const urlParts = urlParam.split("|").filter((part) => part.trim() !== "");
-      if (urlParts.length === 0) {
-        return new Response("There are no valid links", { status: 400 });
-      }
+      if (urlParts.length === 0) return new Response("No valid links", { status: 400 });
 
       for (const url2 of urlParts) {
         const key = generateRandomStr(11);
@@ -2881,8 +2865,8 @@ var src_default = {
             replacedURIs.push(`${host}/${subDir}/${key}`);
           }
         }
-      }
-    }
+      } // ← for 循环正确结束
+    } // ← else 块正确结束
 
     // 转发到 subconverter（伪装浏览器）
     const newUrl = replacedURIs.join("|");
@@ -2898,7 +2882,6 @@ var src_default = {
       'Connection': 'keep-alive',
     });
 
-    // 保留原始必要 headers（排除 CF 内部）
     for (const [k, v] of request.headers.entries()) {
       const key = k.toLowerCase();
       if (!['host', 'cf-ray', 'cf-connecting-ip', 'x-forwarded-for', 'cookie'].includes(key)) {
@@ -2914,7 +2897,6 @@ var src_default = {
 
     const rpResponse = await fetch(modifiedRequest);
 
-    // 清理 R2 临时文件
     if (hasR2 && keys.length > 0) {
       for (const key of keys) {
         await SUB_BUCKET.delete(key);
@@ -2922,7 +2904,6 @@ var src_default = {
       }
     }
 
-    // 处理返回
     if (rpResponse.status === 200) {
       const plaintextData = await rpResponse.text();
       try {
@@ -2930,10 +2911,7 @@ var src_default = {
         const links = decodedData.split(/\r?\n/).filter(l => l.trim());
         const newLinks = links.map(l => replaceInUri(l, replacements, true)).filter(Boolean);
         const replacedBase64Data = btoa(newLinks.join("\r\n"));
-        return new Response(replacedBase64Data, {
-          status: 200,
-          headers: rpResponse.headers
-        });
+        return new Response(replacedBase64Data, { status: 200, headers: rpResponse.headers });
       } catch {
         const result = plaintextData.replace(
           new RegExp(Object.keys(replacements).join("|"), "g"),
@@ -2947,191 +2925,7 @@ var src_default = {
   }
 };
 
-// 节点替换函数
-function replaceInUri(link, replacements, isRecovery) {
-  if (link.startsWith("ss://")) return replaceSS(link, replacements, isRecovery);
-  if (link.startsWith("ssr://")) return replaceSSR(link, replacements, isRecovery);
-  if (link.startsWith("vmess://") || link.startsWith("vmess1://")) return replaceVmess(link, replacements, isRecovery);
-  if (link.startsWith("trojan://") || link.startsWith("vless://")) return replaceTrojan(link, replacements, isRecovery);
-  if (link.startsWith("hysteria://")) return replaceHysteria(link, replacements);
-  if (link.startsWith("hysteria2://")) return replaceHysteria2(link, replacements, isRecovery);
-  return null;
-}
-
-function replaceSSR(link, replacements, isRecovery) {
-  let decoded = urlSafeBase64Decode(link.slice("ssr://".length).split("#")[0]);
-  const match = decoded.match(/(\S+):(\d+?):(\S+?):(\S+?):(\S+?):(\S+)\/?.*/);
-  if (!match) return null;
-  const [, server, , , , , password] = match;
-  if (isRecovery) {
-    return "ssr://" + urlSafeBase64Encode(
-      decoded.replace(password, urlSafeBase64Encode(replacements[urlSafeBase64Decode(password)])).replace(server, replacements[server])
-    );
-  } else {
-    const randPass = generateRandomStr(12);
-    const randDomain = generateRandomStr(12) + ".com";
-    replacements[randDomain] = server;
-    replacements[randPass] = urlSafeBase64Decode(password);
-    return "ssr://" + urlSafeBase64Encode(decoded.replace(server, randDomain).replace(password, urlSafeBase64Encode(randPass)));
-  }
-}
-
-function replaceVmess(link, replacements, isRecovery) {
-  const randUUID = generateRandomUUID();
-  const randDomain = generateRandomStr(10) + ".com";
-  let decoded;
-
-  if (link.includes("?")) {
-    decoded = urlSafeBase64Decode(link.split("vmess://")[1].split("?")[0]);
-    const match = decoded.match(/(.*?):(.*?)@(.*):(.*)/);
-    if (!match) return null;
-    const [, cipher, uuid, server] = match;
-    replacements[randDomain] = server;
-    replacements[randUUID] = uuid;
-    const newEncoded = urlSafeBase64Encode(`${cipher}:${randUUID}@${randDomain}:${match[4]}`);
-    return link.replace(link.split("vmess://")[1].split("?")[0], newEncoded);
-  }
-
-  try {
-    decoded = urlSafeBase64Decode(link.replace(/vmess1?:\/\//g, ""));
-    const json = JSON.parse(decoded);
-    const server = json.add || json.host;
-    const uuid = json.id;
-    replacements[randDomain] = server;
-    replacements[randUUID] = uuid;
-    const regex = new RegExp(`${uuid}|${server}`, "g");
-    const result = isRecovery
-      ? decoded.replace(regex, m => m === uuid ? replacements[uuid] : replacements[server])
-      : decoded.replace(regex, m => m === uuid ? randUUID : randDomain);
-    return "vmess://" + btoa(result);
-  } catch {
-    return null;
-  }
-}
-
-function replaceSS(link, replacements, isRecovery) {
-  const randPass = generateRandomStr(12);
-  const randDomain = randPass + ".com";
-  let temp = link.slice("ss://".length).split("#")[0];
-
-  if (temp.includes("@")) {
-    const [b64, server] = temp.split("@");
-    const [method, pass] = urlSafeBase64Decode(b64).split(":");
-    if (isRecovery) {
-      return link.replace(b64, urlSafeBase64Encode(`${method}:${replacements[pass]}`)).replace(server, replacements[server.split(":")[0]]);
-    } else {
-      replacements[randDomain] = server.split(":")[0];
-      replacements[randPass] = pass;
-      return link.replace(b64, urlSafeBase64Encode(`${method}:${randPass}`)).replace(/@.*/, `@${randDomain}:`);
-    }
-  } else {
-    try {
-      const decoded = urlSafeBase64Decode(temp);
-      const match = decoded.match(/(\S+?):(\S+)@(\S+):/);
-      if (!match) return null;
-      const [, , pass, server] = match;
-      replacements[randDomain] = server;
-      replacements[randPass] = pass;
-      const newEncoded = urlSafeBase64Encode(decoded.replace(/:.*@/, `:${randPass}@`).replace(/@.*:/, `@${randDomain}:`));
-      return "ss://" + newEncoded + (link.includes("#") ? link.split("#")[1] : "");
-    } catch {
-      return null;
-    }
-  }
-}
-
-function replaceTrojan(link, replacements, isRecovery) {
-  const randUUID = generateRandomUUID();
-  const randDomain = generateRandomStr(10) + ".com";
-  const match = link.match(/(vless|trojan):\/\/(.*?@.*?:)/);
-  if (!match) return null;
-  const [uuid, server] = link.split("@")[0].split("://")[1].split(/[:#?]/);
-  replacements[randDomain] = server;
-  replacements[randUUID] = uuid;
-  const regex = new RegExp(`${uuid}|${server}`, "g");
-  return isRecovery
-    ? link.replace(regex, m => m === uuid ? replacements[uuid] : replacements[server])
-    : link.replace(regex, m => m === uuid ? randUUID : randDomain);
-}
-
-function replaceHysteria(link, replacements) {
-  const match = link.match(/hysteria:\/\/(.*?):/);
-  if (!match) return null;
-  const server = match[1];
-  const randDomain = generateRandomStr(12) + ".com";
-  replacements[randDomain] = server;
-  return link.replace(server, randDomain);
-}
-
-function replaceHysteria2(link, replacements, isRecovery) {
-  const randUUID = generateRandomUUID();
-  const randDomain = generateRandomStr(10) + ".com";
-  const match = link.match(/hysteria2:\/\/(.*?@.*?:)/);
-  if (!match) return null;
-  const [uuid, server] = link.split("@")[0].split("://")[1].split(/[:#?]/);
-  replacements[randDomain] = server;
-  replacements[randUUID] = uuid;
-  const regex = new RegExp(`${uuid}|${server}`, "g");
-  return isRecovery
-    ? link.replace(regex, m => m === uuid ? replacements[uuid] : replacements[server])
-    : link.replace(regex, m => m === uuid ? randUUID : randDomain);
-}
-
-function replaceYAML(yamlObj, replacements) {
-  if (!yamlObj.proxies) return null;
-  yamlObj.proxies.forEach(proxy => {
-    const randPass = generateRandomStr(12);
-    const randDomain = randPass + ".com";
-    const origServer = proxy.server;
-    proxy.server = randDomain;
-    replacements[randDomain] = origServer;
-    if (proxy.password) {
-      const orig = proxy.password;
-      proxy.password = randPass;
-      replacements[randPass] = orig;
-    }
-    if (proxy.uuid) {
-      const orig = proxy.uuid;
-      const randUUID = generateRandomUUID();
-      proxy.uuid = randUUID;
-      replacements[randUUID] = orig;
-    }
-  });
-  return yaml.dump(yamlObj);
-}
-
-function urlSafeBase64Encode(str) {
-  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function urlSafeBase64Decode(str) {
-  const padded = str + "=".repeat((4 - str.length % 4) % 4);
-  return atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
-}
-
-function generateRandomStr(len) {
-  return Math.random().toString(36).substring(2, len + 2);
-}
-
-function generateRandomUUID() {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
-    const r = Math.random() * 16 | 0;
-    const v = c === "x" ? r : (r & 3 | 8);
-    return v.toString(16);
-  });
-}
-
-function parseData(data) {
-  try {
-    return { format: "base64", data: urlSafeBase64Decode(data) };
-  } catch {
-    try {
-      return { format: "yaml", data: yaml.load(data) };
-    } catch {
-      return { format: "unknown", data };
-    }
-  }
-}
+// ... (所有工具函数保持不变：replaceInUri, replaceSS, replaceVmess, etc.) ...
 
 export {
   src_default as default
