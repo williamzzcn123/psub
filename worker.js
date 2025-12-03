@@ -128,7 +128,6 @@ var require_snippet = __commonJS({
       return {
         str: head + buffer.slice(lineStart, lineEnd).replace(/\t/g, "\u2192") + tail,
         pos: position - lineStart + head.length
-        // relative position
       };
     }
     function padStart(string, max) {
@@ -622,7 +621,6 @@ var require_int = __commonJS({
         decimal: function (obj) {
           return obj.toString(10);
         },
-        /* eslint-disable max-len */
         hexadecimal: function (obj) {
           return obj >= 0 ? "0x" + obj.toString(16).toUpperCase() : "-0x" + obj.toString(16).toUpperCase().slice(1);
         }
@@ -646,15 +644,12 @@ var require_float = __commonJS({
     var common = require_common();
     var Type = require_type();
     var YAML_FLOAT_PATTERN = new RegExp(
-      // 2.5e4, 2.5 and integers
       "^(?:[-+]?(?:[0-9][0-9_]*)(?:\\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?|\\.[0-9_]+(?:[eE][-+]?[0-9]+)?|[-+]?\\.(?:inf|Inf|INF)|\\.(?:nan|NaN|NAN))$"
     );
     function resolveYamlFloat(data) {
       if (data === null)
         return false;
-      if (!YAML_FLOAT_PATTERN.test(data) || // Quick hack to not allow integers end with `_`
-        // Probably should update regexp & check speed
-        data[data.length - 1] === "_") {
+      if (!YAML_FLOAT_PATTERN.test(data) || data[data.length - 1] === "_") {
         return false;
       }
       return true;
@@ -1165,7 +1160,6 @@ var require_loader = __commonJS({
       var mark = {
         name: state.filename,
         buffer: state.input.slice(0, -1),
-        // omit trailing \0
         position: state.position,
         line: state.line,
         column: state.position - state.lineStart
@@ -1463,21 +1457,24 @@ var require_loader = __commonJS({
           } else {
             return true;
           }
-        } else if (is_EOL(ch)) {
+        } else if (ch === 10 || ch === 13) {
           captureSegment(state, captureStart, captureEnd, true);
-          writeFoldedLines(state, skipSeparationSpace(state, false, nodeIndent));
-          captureStart = captureEnd = state.position;
-        } else if (state.position === state.lineStart && testDocumentSeparator(state)) {
-          throwError(state, "unexpected end of the document within a single quoted scalar");
-        } else {
+          if (ch === 13 && state.input.charCodeAt(state.position + 1) === 10) {
+            state.position++;
+          }
           state.position++;
-          captureEnd = state.position;
+          captureStart = captureEnd = state.position;
+        } else if (state.position - state.lineStart > 1024) {
+          return true;
+        } else {
+          captureEnd = state.position + 1;
+          state.position++;
         }
       }
-      throwError(state, "unexpected end of the stream within a single quoted scalar");
+      return false;
     }
     function readDoubleQuotedScalar(state, nodeIndent) {
-      var captureStart, captureEnd, hexLength, hexResult, tmp, ch;
+      var ch, captureStart, captureEnd, tmp;
       ch = state.input.charCodeAt(state.position);
       if (ch !== 34) {
         return false;
@@ -1500,8 +1497,8 @@ var require_loader = __commonJS({
             state.result += simpleEscapeMap[ch];
             state.position++;
           } else if ((tmp = escapedHexLen(ch)) > 0) {
-            hexLength = tmp;
-            hexResult = 0;
+            var hexLength = tmp;
+            var hexResult = 0;
             for (; hexLength > 0; hexLength--) {
               ch = state.input.charCodeAt(++state.position);
               if ((tmp = fromHexCode(ch)) >= 0) {
@@ -1520,460 +1517,291 @@ var require_loader = __commonJS({
           captureSegment(state, captureStart, captureEnd, true);
           writeFoldedLines(state, skipSeparationSpace(state, false, nodeIndent));
           captureStart = captureEnd = state.position;
-        } else if (state.position === state.lineStart && testDocumentSeparator(state)) {
-          throwError(state, "unexpected end of the document within a double quoted scalar");
         } else {
+          captureEnd = state.position + 1;
           state.position++;
-          captureEnd = state.position;
         }
       }
       throwError(state, "unexpected end of the stream within a double quoted scalar");
     }
     function readFlowCollection(state, nodeIndent) {
-      var readNext = true, _line, _lineStart, _pos, _tag = state.tag, _result, _anchor = state.anchor, following, terminator, isPair, isExplicitPair, isMapping, overridableKeys = /* @__PURE__ */ Object.create(null), keyNode, keyTag, valueNode, ch;
+      var ch, following, _line, _tag = state.tag, _result, _position;
       ch = state.input.charCodeAt(state.position);
       if (ch === 91) {
-        terminator = 93;
-        isMapping = false;
-        _result = [];
-      } else if (ch === 123) {
-        terminator = 125;
-        isMapping = true;
-        _result = {};
-      } else {
-        return false;
-      }
-      if (state.anchor !== null) {
-        state.anchorMap[state.anchor] = _result;
-      }
-      ch = state.input.charCodeAt(++state.position);
-      while (ch !== 0) {
-        skipSeparationSpace(state, true, nodeIndent);
-        ch = state.input.charCodeAt(state.position);
-        if (ch === terminator) {
-          state.position++;
-          state.tag = _tag;
-          state.anchor = _anchor;
-          state.kind = isMapping ? "mapping" : "sequence";
-          state.result = _result;
-          return true;
-        } else if (!readNext) {
-          throwError(state, "missed comma between flow collection entries");
-        } else if (ch === 44) {
-          throwError(state, "expected the node content, but found ','");
-        }
-        keyTag = keyNode = valueNode = null;
-        isPair = isExplicitPair = false;
-        if (ch === 63) {
-          following = state.input.charCodeAt(state.position + 1);
-          if (is_WS_OR_EOL(following)) {
-            isPair = isExplicitPair = true;
-            state.position++;
-            skipSeparationSpace(state, true, nodeIndent);
-          }
-        }
         _line = state.line;
-        _lineStart = state.lineStart;
-        _pos = state.position;
-        composeNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true);
-        keyTag = state.tag;
-        keyNode = state.result;
+        _position = state.position;
+        state.position++;
         skipSeparationSpace(state, true, nodeIndent);
-        ch = state.input.charCodeAt(state.position);
-        if ((isExplicitPair || state.line === _line) && ch === 58) {
-          isPair = true;
-          ch = state.input.charCodeAt(++state.position);
-          skipSeparationSpace(state, true, nodeIndent);
-          composeNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true);
-          valueNode = state.result;
-        }
-        if (isMapping) {
-          storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode, _line, _lineStart, _pos);
-        } else if (isPair) {
-          _result.push(storeMappingPair(state, null, overridableKeys, keyTag, keyNode, valueNode, _line, _lineStart, _pos));
+        if (state.input.charCodeAt(state.position) === 93) {
+          state.position++;
+          state.kind = "sequence";
+          state.result = [];
+          return true;
         } else {
-          _result.push(keyNode);
+          state.kind = "sequence";
+          state.result = [];
+          while (state.position < state.length) {
+            if (state.input.charCodeAt(state.position) === 93) {
+              state.position++;
+              return true;
+            }
+            if (!readFlowSequenceEntry(state, nodeIndent)) {
+              state.position = _position;
+              state.line = _line;
+              return false;
+            }
+            if (state.input.charCodeAt(state.position) === 44) {
+              state.position++;
+              skipSeparationSpace(state, true, nodeIndent);
+            } else {
+              break;
+            }
+          }
+          return false;
         }
+      } else if (ch === 123) {
+        _line = state.line;
+        _position = state.position;
+        state.position++;
         skipSeparationSpace(state, true, nodeIndent);
-        ch = state.input.charCodeAt(state.position);
-        if (ch === 44) {
-          readNext = true;
-          ch = state.input.charCodeAt(++state.position);
+        if (state.input.charCodeAt(state.position) === 125) {
+          state.position++;
+          state.kind = "mapping";
+          state.result = {};
+          return true;
         } else {
-          readNext = false;
+          state.kind = "mapping";
+          state.result = {};
+          while (state.position < state.length) {
+            if (state.input.charCodeAt(state.position) === 125) {
+              state.position++;
+              return true;
+            }
+            if (!readFlowMappingEntry(state, nodeIndent)) {
+              state.position = _position;
+              state.line = _line;
+              return false;
+            }
+            if (state.input.charCodeAt(state.position) === 44) {
+              state.position++;
+              skipSeparationSpace(state, true, nodeIndent);
+            } else {
+              break;
+            }
+          }
+          return false;
         }
       }
-      throwError(state, "unexpected end of the stream within a flow collection");
+      return false;
     }
-    function readBlockScalar(state, nodeIndent) {
-      var captureStart, folding, chomping = CHOMPING_CLIP, didReadContent = false, detectedIndent = false, textIndent = nodeIndent, emptyLines = 0, atMoreIndented = false, tmp, ch;
+    function readFlowSequenceEntry(state, nodeIndent) {
+      var _line = state.line, _position = state.position, ch;
       ch = state.input.charCodeAt(state.position);
-      if (ch === 124) {
-        folding = false;
-      } else if (ch === 62) {
-        folding = true;
-      } else {
+      if (ch === 93) {
         return false;
       }
-      state.kind = "scalar";
-      state.result = "";
-      while (ch !== 0) {
-        ch = state.input.charCodeAt(++state.position);
-        if (ch === 43 || ch === 45) {
-          if (CHOMPING_CLIP === chomping) {
-            chomping = ch === 43 ? CHOMPING_KEEP : CHOMPING_STRIP;
-          } else {
-            throwError(state, "repeat of a chomping mode identifier");
+      if (ch === 44) {
+        state.position++;
+        skipSeparationSpace(state, true, nodeIndent);
+        return readFlowSequenceEntry(state, nodeIndent);
+      }
+      if (readNode(state, nodeIndent, CONTEXT_FLOW_IN)) {
+        return true;
+      }
+      state.line = _line;
+      state.position = _position;
+      return false;
+    }
+    function readFlowMappingEntry(state, nodeIndent) {
+      var _line = state.line, _position = state.position, ch;
+      ch = state.input.charCodeAt(state.position);
+      if (ch === 125) {
+        return false;
+      }
+      if (ch === 44) {
+        state.position++;
+        skipSeparationSpace(state, true, nodeIndent);
+        return readFlowMappingEntry(state, nodeIndent);
+      }
+      if (readFlowMappingKey(state, nodeIndent)) {
+        if (state.input.charCodeAt(state.position) === 58) {
+          state.position++;
+          skipSeparationSpace(state, true, nodeIndent);
+          if (readNode(state, nodeIndent, CONTEXT_FLOW_IN)) {
+            return true;
           }
-        } else if ((tmp = fromDecimalCode(ch)) >= 0) {
-          if (tmp === 0) {
-            throwError(state, "bad explicit indentation width of a block scalar; it cannot be less than one");
-          } else if (!detectedIndent) {
-            textIndent = nodeIndent + tmp - 1;
-            detectedIndent = true;
-          } else {
-            throwError(state, "repeat of an indentation width identifier");
-          }
-        } else {
-          break;
         }
       }
-      if (is_WHITE_SPACE(ch)) {
-        do {
-          ch = state.input.charCodeAt(++state.position);
-        } while (is_WHITE_SPACE(ch));
-        if (ch === 35) {
-          do {
-            ch = state.input.charCodeAt(++state.position);
-          } while (!is_EOL(ch) && ch !== 0);
-        }
+      state.line = _line;
+      state.position = _position;
+      return false;
+    }
+    function readFlowMappingKey(state, nodeIndent) {
+      var _line = state.line, _position = state.position, ch;
+      ch = state.input.charCodeAt(state.position);
+      if (ch === 63 || ch === 58 || ch === 125) {
+        return false;
       }
-      while (ch !== 0) {
-        readLineBreak(state);
-        state.lineIndent = 0;
-        ch = state.input.charCodeAt(state.position);
-        while ((!detectedIndent || state.lineIndent < textIndent) && ch === 32) {
-          state.lineIndent++;
-          ch = state.input.charCodeAt(++state.position);
-        }
-        if (!detectedIndent && state.lineIndent > textIndent) {
-          textIndent = state.lineIndent;
-        }
-        if (is_EOL(ch)) {
-          emptyLines++;
-          continue;
-        }
-        if (state.lineIndent < textIndent) {
-          if (chomping === CHOMPING_KEEP) {
-            state.result += common.repeat("\n", didReadContent ? 1 + emptyLines : emptyLines);
-          } else if (chomping === CHOMPING_CLIP) {
-            if (didReadContent) {
-              state.result += "\n";
-            }
-          }
+      if (readNode(state, nodeIndent, CONTEXT_FLOW_IN)) {
+        return true;
+      }
+      state.line = _line;
+      state.position = _position;
+      return false;
+    }
+    function readBlockSequence(state, nodeIndent) {
+      var _line, _position, ch;
+      ch = state.input.charCodeAt(state.position);
+      if (ch !== 45) {
+        return false;
+      }
+      _line = state.line;
+      _position = state.position;
+      state.position++;
+      skipSeparationSpace(state, true, nodeIndent);
+      state.kind = "sequence";
+      state.result = [];
+      while (state.position < state.length) {
+        if (state.input.charCodeAt(state.position) !== 45) {
           break;
         }
-        if (folding) {
-          if (is_WHITE_SPACE(ch)) {
-            atMoreIndented = true;
-            state.result += common.repeat("\n", didReadContent ? 1 + emptyLines : emptyLines);
-          } else if (atMoreIndented) {
-            atMoreIndented = false;
-            state.result += common.repeat("\n", emptyLines + 1);
-          } else if (emptyLines === 0) {
-            if (didReadContent) {
-              state.result += " ";
-            }
-          } else {
-            state.result += common.repeat("\n", emptyLines);
-          }
-        } else {
-          state.result += common.repeat("\n", didReadContent ? 1 + emptyLines : emptyLines);
+        state.position++;
+        skipSeparationSpace(state, true, nodeIndent);
+        if (!readNode(state, nodeIndent + 1, CONTEXT_BLOCK_IN)) {
+          state.position = _position;
+          state.line = _line;
+          return false;
         }
-        didReadContent = true;
-        detectedIndent = true;
-        emptyLines = 0;
-        captureStart = state.position;
-        while (!is_EOL(ch) && ch !== 0) {
-          ch = state.input.charCodeAt(++state.position);
-        }
-        captureSegment(state, captureStart, state.position, false);
       }
       return true;
     }
-    function readBlockSequence(state, nodeIndent) {
-      var _line, _tag = state.tag, _anchor = state.anchor, _result = [], following, detected = false, ch;
-      if (state.firstTabInLine !== -1)
-        return false;
-      if (state.anchor !== null) {
-        state.anchorMap[state.anchor] = _result;
-      }
+    function readBlockMapping(state, nodeIndent) {
+      var _line, _position, ch, keyTag, keyNode, valueNode;
       ch = state.input.charCodeAt(state.position);
-      while (ch !== 0) {
-        if (state.firstTabInLine !== -1) {
-          state.position = state.firstTabInLine;
-          throwError(state, "tab characters must not be used in indentation");
-        }
-        if (ch !== 45) {
-          break;
-        }
-        following = state.input.charCodeAt(state.position + 1);
-        if (!is_WS_OR_EOL(following)) {
-          break;
-        }
-        detected = true;
-        state.position++;
-        if (skipSeparationSpace(state, true, -1)) {
-          if (state.lineIndent <= nodeIndent) {
-            _result.push(null);
-            ch = state.input.charCodeAt(state.position);
-            continue;
-          }
-        }
+      if (ch === 63) {
         _line = state.line;
-        composeNode(state, nodeIndent, CONTEXT_BLOCK_IN, false, true);
-        _result.push(state.result);
-        skipSeparationSpace(state, true, -1);
-        ch = state.input.charCodeAt(state.position);
-        if ((state.line === _line || state.lineIndent > nodeIndent) && ch !== 0) {
-          throwError(state, "bad indentation of a sequence entry");
-        } else if (state.lineIndent < nodeIndent) {
+        _position = state.position;
+        state.position++;
+        skipSeparationSpace(state, true, nodeIndent);
+        if (readNode(state, nodeIndent, CONTEXT_BLOCK_IN)) {
+          keyTag = state.tag;
+          keyNode = state.result;
+          if (state.input.charCodeAt(state.position) !== 58) {
+            state.position = _position;
+            state.line = _line;
+            return false;
+          }
+          state.position++;
+          skipSeparationSpace(state, true, nodeIndent);
+          if (!readNode(state, nodeIndent, CONTEXT_BLOCK_IN)) {
+            state.position = _position;
+            state.line = _line;
+            return false;
+          }
+          valueNode = state.result;
+          state.kind = "mapping";
+          state.result = {};
+          storeMappingPair(state, state.result, {}, keyTag, keyNode, valueNode);
+          return true;
+        }
+        state.position = _position;
+        state.line = _line;
+        return false;
+      }
+      state.kind = "mapping";
+      state.result = {};
+      while (state.position < state.length) {
+        _line = state.line;
+        _position = state.position;
+        if (!readBlockMappingKey(state, nodeIndent)) {
           break;
         }
+        keyTag = state.tag;
+        keyNode = state.result;
+        if (state.input.charCodeAt(state.position) !== 58) {
+          state.position = _position;
+          state.line = _line;
+          return false;
+        }
+        state.position++;
+        skipSeparationSpace(state, true, nodeIndent);
+        if (!readNode(state, nodeIndent, CONTEXT_BLOCK_IN)) {
+          state.position = _position;
+          state.line = _line;
+          return false;
+        }
+        valueNode = state.result;
+        storeMappingPair(state, state.result, {}, keyTag, keyNode, valueNode);
       }
-      if (detected) {
-        state.tag = _tag;
-        state.anchor = _anchor;
-        state.kind = "sequence";
-        state.result = _result;
+      return true;
+    }
+    function readBlockMappingKey(state, nodeIndent) {
+      var _line = state.line, _position = state.position, ch;
+      ch = state.input.charCodeAt(state.position);
+      if (ch === 63) {
+        state.position++;
+        skipSeparationSpace(state, true, nodeIndent);
+        if (readNode(state, nodeIndent, CONTEXT_BLOCK_IN)) {
+          return true;
+        }
+        state.position = _position;
+        state.line = _line;
+        return false;
+      }
+      if (readNode(state, nodeIndent, CONTEXT_BLOCK_IN)) {
         return true;
       }
       return false;
     }
-    function readBlockMapping(state, nodeIndent, flowIndent) {
-      var following, allowCompact, _line, _keyLine, _keyLineStart, _keyPos, _tag = state.tag, _anchor = state.anchor, _result = {}, overridableKeys = /* @__PURE__ */ Object.create(null), keyTag = null, keyNode = null, valueNode = null, atExplicitKey = false, detected = false, ch;
-      if (state.firstTabInLine !== -1)
-        return false;
-      if (state.anchor !== null) {
-        state.anchorMap[state.anchor] = _result;
-      }
+    function readTag(state) {
+      var _position = state.position, ch;
       ch = state.input.charCodeAt(state.position);
-      while (ch !== 0) {
-        if (!atExplicitKey && state.firstTabInLine !== -1) {
-          state.position = state.firstTabInLine;
-          throwError(state, "tab characters must not be used in indentation");
+      if (ch !== 33) {
+        return false;
+      }
+      state.position++;
+      if (state.input.charCodeAt(state.position) === 60) {
+        state.position++;
+        _position = state.position;
+        while (state.input.charCodeAt(state.position) !== 62 && state.position < state.length) {
+          state.position++;
         }
-        following = state.input.charCodeAt(state.position + 1);
-        _line = state.line;
-        if ((ch === 63 || ch === 58) && is_WS_OR_EOL(following)) {
-          if (ch === 63) {
-            if (atExplicitKey) {
-              storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null, _keyLine, _keyLineStart, _keyPos);
-              keyTag = keyNode = valueNode = null;
-            }
-            detected = true;
-            atExplicitKey = true;
-            allowCompact = true;
-          } else if (atExplicitKey) {
-            atExplicitKey = false;
-            allowCompact = true;
-          } else {
-            throwError(state, "incomplete explicit mapping pair; a key node is missed; or followed by a non-tabulated empty line");
-          }
-          state.position += 1;
-          ch = following;
-        } else {
-          _keyLine = state.line;
-          _keyLineStart = state.lineStart;
-          _keyPos = state.position;
-          if (!composeNode(state, flowIndent, CONTEXT_FLOW_OUT, false, true)) {
-            break;
-          }
-          if (state.line === _line) {
-            ch = state.input.charCodeAt(state.position);
-            while (is_WHITE_SPACE(ch)) {
-              ch = state.input.charCodeAt(++state.position);
-            }
-            if (ch === 58) {
-              ch = state.input.charCodeAt(++state.position);
-              if (!is_WS_OR_EOL(ch)) {
-                throwError(state, "a whitespace character is expected after the key-value separator within a block mapping");
-              }
-              if (atExplicitKey) {
-                storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null, _keyLine, _keyLineStart, _keyPos);
-                keyTag = keyNode = valueNode = null;
-              }
-              detected = true;
-              atExplicitKey = false;
-              allowCompact = false;
-              keyTag = state.tag;
-              keyNode = state.result;
-            } else if (detected) {
-              throwError(state, "can not read an implicit mapping pair; a colon is missed");
-            } else {
-              state.tag = _tag;
-              state.anchor = _anchor;
-              return true;
-            }
-          } else if (detected) {
-            throwError(state, "can not read a block mapping entry; a multiline key may not be an implicit key");
-          } else {
-            state.tag = _tag;
-            state.anchor = _anchor;
-            return true;
-          }
+        if (state.input.charCodeAt(state.position) !== 62) {
+          state.position = _position - 1;
+          return false;
         }
-        if (state.line === _line || state.lineIndent > nodeIndent) {
-          if (atExplicitKey) {
-            _keyLine = state.line;
-            _keyLineStart = state.lineStart;
-            _keyPos = state.position;
-          }
-          if (composeNode(state, nodeIndent, CONTEXT_BLOCK_OUT, true, allowCompact)) {
-            if (atExplicitKey) {
-              keyNode = state.result;
-            } else {
-              valueNode = state.result;
-            }
-          }
-          if (!atExplicitKey) {
-            storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode, _keyLine, _keyLineStart, _keyPos);
-            keyTag = keyNode = valueNode = null;
-          }
-          skipSeparationSpace(state, true, -1);
-          ch = state.input.charCodeAt(state.position);
+        state.tag = state.input.slice(_position, state.position);
+        state.position++;
+        return true;
+      } else {
+        _position = state.position;
+        while (state.input.charCodeAt(state.position) !== 32 && state.input.charCodeAt(state.position) !== 9 && state.input.charCodeAt(state.position) !== 10 && state.input.charCodeAt(state.position) !== 13 && state.position < state.length) {
+          state.position++;
         }
-        if ((state.line === _line || state.lineIndent > nodeIndent) && ch !== 0) {
-          throwError(state, "bad indentation of a mapping entry");
-        } else if (state.lineIndent < nodeIndent) {
+        state.tag = state.input.slice(_position, state.position);
+        return true;
+      }
+    }
+    function readAnchor(state) {
+      var _position = state.position, ch;
+      ch = state.input.charCodeAt(state.position);
+      if (ch !== 38 && ch !== 42) {
+        return false;
+      }
+      state.anchor = "";
+      state.position++;
+      while (state.position < state.length) {
+        ch = state.input.charCodeAt(state.position);
+        if (ch === 32 || ch === 9 || ch === 10 || ch === 13 || ch === 44 || ch === 91 || ch === 93 || ch === 123 || ch === 125) {
           break;
         }
-      }
-      if (atExplicitKey) {
-        storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null, _keyLine, _keyLineStart, _keyPos);
-      }
-      if (detected) {
-        state.tag = _tag;
-        state.anchor = _anchor;
-        state.kind = "mapping";
-        state.result = _result;
-      }
-      return detected;
-    }
-    function readTagProperty(state) {
-      var _position, isVerbatim = false, isNamed = false, tagHandle, tagName, ch;
-      ch = state.input.charCodeAt(state.position);
-      if (ch !== 33)
-        return false;
-      if (state.tag !== null) {
-        throwError(state, "duplication of a tag property");
-      }
-      ch = state.input.charCodeAt(++state.position);
-      if (ch === 60) {
-        isVerbatim = true;
-        ch = state.input.charCodeAt(++state.position);
-      } else if (ch === 33) {
-        isNamed = true;
-        tagHandle = "!!";
-        ch = state.input.charCodeAt(++state.position);
-      } else {
-        tagHandle = "!";
-      }
-      _position = state.position;
-      if (isVerbatim) {
-        do {
-          ch = state.input.charCodeAt(++state.position);
-        } while (ch !== 0 && ch !== 62);
-        if (state.position < state.length) {
-          tagName = state.input.slice(_position, state.position);
-          ch = state.input.charCodeAt(++state.position);
-        } else {
-          throwError(state, "unexpected end of the stream within a verbatim tag");
-        }
-      } else {
-        while (ch !== 0 && !is_WS_OR_EOL(ch)) {
-          if (ch === 33) {
-            if (!isNamed) {
-              tagHandle = state.input.slice(_position - 1, state.position + 1);
-              if (!PATTERN_TAG_HANDLE.test(tagHandle)) {
-                throwError(state, "named tag handle cannot contain such characters");
-              }
-              isNamed = true;
-              _position = state.position + 1;
-            } else {
-              throwError(state, "tag suffix cannot contain exclamation marks");
-            }
-          }
-          ch = state.input.charCodeAt(++state.position);
-        }
-        tagName = state.input.slice(_position, state.position);
-        if (PATTERN_FLOW_INDICATORS.test(tagName)) {
-          throwError(state, "tag suffix cannot contain flow indicator characters");
-        }
-      }
-      if (tagName && !PATTERN_TAG_URI.test(tagName)) {
-        throwError(state, "tag name cannot contain such characters: " + tagName);
-      }
-      try {
-        tagName = decodeURIComponent(tagName);
-      } catch (err) {
-        throwError(state, "tag name is malformed: " + tagName);
-      }
-      if (isVerbatim) {
-        state.tag = tagName;
-      } else if (_hasOwnProperty.call(state.tagMap, tagHandle)) {
-        state.tag = state.tagMap[tagHandle] + tagName;
-      } else if (tagHandle === "!") {
-        state.tag = "!" + tagName;
-      } else if (tagHandle === "!!") {
-        state.tag = "tag:yaml.org,2002:" + tagName;
-      } else {
-        throwError(state, 'undeclared tag handle "' + tagHandle + '"');
+        state.anchor += String.fromCharCode(ch);
+        state.position++;
       }
       return true;
     }
-    function readAnchorProperty(state) {
-      var _position, ch;
-      ch = state.input.charCodeAt(state.position);
-      if (ch !== 38)
-        return false;
-      if (state.anchor !== null) {
-        throwError(state, "duplication of an anchor property");
-      }
-      ch = state.input.charCodeAt(++state.position);
-      _position = state.position;
-      while (ch !== 0 && !is_WS_OR_EOL(ch) && !is_FLOW_INDICATOR(ch)) {
-        ch = state.input.charCodeAt(++state.position);
-      }
-      if (state.position === _position) {
-        throwError(state, "name of an anchor node must contain at least one character");
-      }
-      state.anchor = state.input.slice(_position, state.position);
-      return true;
-    }
-    function readAlias(state) {
-      var _position, alias, ch;
-      ch = state.input.charCodeAt(state.position);
-      if (ch !== 42)
-        return false;
-      ch = state.input.charCodeAt(++state.position);
-      _position = state.position;
-      while (ch !== 0 && !is_WS_OR_EOL(ch) && !is_FLOW_INDICATOR(ch)) {
-        ch = state.input.charCodeAt(++state.position);
-      }
-      if (state.position === _position) {
-        throwError(state, "name of an alias node must contain at least one character");
-      }
-      alias = state.input.slice(_position, state.position);
-      if (!_hasOwnProperty.call(state.anchorMap, alias)) {
-        throwError(state, 'unidentified alias "' + alias + '"');
-      }
-      state.result = state.anchorMap[alias];
-      skipSeparationSpace(state, true, -1);
-      return true;
-    }
-    function composeNode(state, parentIndent, nodeContext, allowToSeek, allowCompact) {
-      var allowBlockStyles, allowBlockScalars, allowBlockCollections, indentStatus = 1, atNewLine = false, hasContent = false, typeIndex, typeQuantity, typeList, type, flowIndent, blockIndent;
+    function readNode(state, nodeIndent, context) {
+      var _line, _position, ch;
       if (state.listener !== null) {
         state.listener("open", state);
       }
@@ -1981,76 +1809,57 @@ var require_loader = __commonJS({
       state.anchor = null;
       state.kind = null;
       state.result = null;
-      allowBlockStyles = allowBlockScalars = allowBlockCollections = CONTEXT_BLOCK_OUT === nodeContext || CONTEXT_BLOCK_IN === nodeContext;
-      if (allowToSeek) {
-        if (skipSeparationSpace(state, true, -1)) {
-          atNewLine = true;
-          if (state.lineIndent > parentIndent) {
-            indentStatus = 1;
-          } else if (state.lineIndent === parentIndent) {
-            indentStatus = 0;
-          } else if (state.lineIndent < parentIndent) {
-            indentStatus = -1;
-          }
+      if (readTag(state)) {
+        skipSeparationSpace(state, true, -1);
+      }
+      if (readAnchor(state)) {
+        skipSeparationSpace(state, true, -1);
+      }
+      ch = state.input.charCodeAt(state.position);
+      if (ch === 39) {
+        if (readSingleQuotedScalar(state, nodeIndent)) {
+          return composeNode(state);
+        }
+      } else if (ch === 34) {
+        if (readDoubleQuotedScalar(state, nodeIndent)) {
+          return composeNode(state);
+        }
+      } else if (readPlainScalar(state, nodeIndent, context === CONTEXT_FLOW_IN || context === CONTEXT_FLOW_OUT)) {
+        return composeNode(state);
+      } else if (context === CONTEXT_FLOW_IN || context === CONTEXT_FLOW_OUT) {
+        if (readFlowCollection(state, nodeIndent)) {
+          return composeNode(state);
+        }
+      } else if (context === CONTEXT_BLOCK_IN || context === CONTEXT_BLOCK_OUT) {
+        if (readBlockSequence(state, nodeIndent)) {
+          return composeNode(state);
+        }
+        if (readBlockMapping(state, nodeIndent)) {
+          return composeNode(state);
         }
       }
-      if (indentStatus === 1) {
-        while (readTagProperty(state) || readAnchorProperty(state)) {
-          if (skipSeparationSpace(state, true, -1)) {
-            atNewLine = true;
-            allowBlockCollections = allowBlockStyles;
-            if (state.lineIndent > parentIndent) {
-              indentStatus = 1;
-            } else if (state.lineIndent === parentIndent) {
-              indentStatus = 0;
-            } else if (state.lineIndent < parentIndent) {
-              indentStatus = -1;
-            }
-          } else {
-            allowBlockCollections = false;
-          }
-        }
-      }
-      if (allowBlockCollections) {
-        allowBlockCollections = atNewLine || allowCompact;
-      }
-      if (indentStatus === 1 || CONTEXT_BLOCK_OUT === nodeContext) {
-        if (CONTEXT_FLOW_IN === nodeContext || CONTEXT_FLOW_OUT === nodeContext) {
-          flowIndent = parentIndent;
+      if (state.tag === null && state.anchor === null && state.kind === null && state.result === null) {
+        _line = state.line;
+        _position = state.position;
+        skipSeparationSpace(state, true, -1);
+        if (state.lineIndent > nodeIndent) {
+          state.kind = "scalar";
+          state.result = "";
+          return composeNode(state);
         } else {
-          flowIndent = parentIndent + 1;
-        }
-        blockIndent = state.position - state.lineStart;
-        if (indentStatus === 1) {
-          if (allowBlockCollections && (readBlockSequence(state, blockIndent) || readBlockMapping(state, blockIndent, flowIndent)) || readFlowCollection(state, flowIndent)) {
-            hasContent = true;
-          } else {
-            if (allowBlockScalars && readBlockScalar(state, flowIndent) || readSingleQuotedScalar(state, flowIndent) || readDoubleQuotedScalar(state, flowIndent)) {
-              hasContent = true;
-            } else if (readAlias(state)) {
-              hasContent = true;
-              if (state.tag !== null || state.anchor !== null) {
-                throwError(state, "alias node should not have any properties");
-              }
-            } else if (readPlainScalar(state, flowIndent, CONTEXT_FLOW_IN === nodeContext)) {
-              hasContent = true;
-              if (state.tag === null) {
-                state.tag = "?";
-              }
-            }
-            if (state.anchor !== null) {
-              state.anchorMap[state.anchor] = state.result;
-            }
-          }
-        } else if (indentStatus === 0) {
-          hasContent = allowBlockCollections && readBlockSequence(state, blockIndent);
+          state.line = _line;
+          state.position = _position;
+          return false;
         }
       }
-      if (state.tag === null) {
-        if (state.anchor !== null) {
-          state.anchorMap[state.anchor] = state.result;
-        }
-      } else if (state.tag === "?") {
+      return false;
+    }
+    function composeNode(state) {
+      var type, typeIndex, typeQuantity, typeList;
+      if (state.anchor !== null) {
+        state.anchorMap[state.anchor] = state.result;
+      }
+      if (state.tag === "?") {
         if (state.result !== null && state.kind !== "scalar") {
           throwError(state, 'unacceptable node kind for !<?> tag; it should be "scalar", not "' + state.kind + '"');
         }
@@ -2065,7 +1874,7 @@ var require_loader = __commonJS({
             break;
           }
         }
-      } else if (state.tag !== "!") {
+      } else if (state.tag !== null) {
         if (_hasOwnProperty.call(state.typeMap[state.kind || "fallback"], state.tag)) {
           type = state.typeMap[state.kind || "fallback"][state.tag];
         } else {
@@ -2096,7 +1905,7 @@ var require_loader = __commonJS({
       if (state.listener !== null) {
         state.listener("close", state);
       }
-      return state.tag !== null || state.anchor !== null || hasContent;
+      return state.tag !== null || state.anchor !== null || state.kind !== null;
     }
     function readDocument(state) {
       var documentStart = state.position, _position, directiveName, directiveArgs, hasDirectives = false, ch;
@@ -2401,11 +2210,7 @@ var require_dumper = __commonJS({
       var cIsNsCharOrWhitespace = isNsCharOrWhitespace(c);
       var cIsNsChar = cIsNsCharOrWhitespace && !isWhitespace(c);
       return (
-        // ns-plain-safe
-        (inblock ? (
-          // c = flow-in
-          cIsNsCharOrWhitespace
-        ) : cIsNsCharOrWhitespace && c !== CHAR_COMMA && c !== CHAR_LEFT_SQUARE_BRACKET && c !== CHAR_RIGHT_SQUARE_BRACKET && c !== CHAR_LEFT_CURLY_BRACKET && c !== CHAR_RIGHT_CURLY_BRACKET) && c !== CHAR_SHARP && !(prev === CHAR_COLON && !cIsNsChar) || isNsCharOrWhitespace(prev) && !isWhitespace(prev) && c === CHAR_SHARP || prev === CHAR_COLON && cIsNsChar
+        (inblock ? cIsNsCharOrWhitespace : cIsNsCharOrWhitespace && c !== CHAR_COMMA && c !== CHAR_LEFT_SQUARE_BRACKET && c !== CHAR_RIGHT_SQUARE_BRACKET && c !== CHAR_LEFT_CURLY_BRACKET && c !== CHAR_RIGHT_CURLY_BRACKET) && c !== CHAR_SHARP && !(prev === CHAR_COLON && !cIsNsChar) || isNsCharOrWhitespace(prev) && !isWhitespace(prev) && c === CHAR_SHARP || prev === CHAR_COLON && cIsNsChar
       );
     }
     function isPlainSafeFirst(c) {
@@ -2457,8 +2262,7 @@ var require_dumper = __commonJS({
           if (char === CHAR_LINE_FEED) {
             hasLineBreak = true;
             if (shouldTrackWidth) {
-              hasFoldableLine = hasFoldableLine || // Foldable line = too long, and not more-indented.
-                i - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ";
+              hasFoldableLine = hasFoldableLine || i - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ";
               previousLineBreak = i;
             }
           } else if (!isPrintable(char)) {
@@ -2790,7 +2594,7 @@ var require_dumper = __commonJS({
           } else {
             writeFlowSequence(state, level, state.dump);
             if (duplicate) {
-              state.dump = "&ref_" + duplicateIndex + " " + state.dump;
+              state.dump = "&ref_" + duplicateIndex + state.dump;
             }
           }
         } else if (type === "[object String]") {
@@ -2914,52 +2718,105 @@ var require_js_yaml = __commonJS({
 // src/index.js
 init_modules_watch_stub();
 var yaml = require_js_yaml();
+
+// 安全 fetch（支持超时 + 错误处理）
+async function safeFetch(url, request, timeout = 8000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const resp = await fetch(url, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      redirect: "follow",
+      signal: controller.signal
+    });
+    clearTimeout(id);
+
+    if (!resp.ok) {
+      console.warn(`[fetch] ${url} 返回 ${resp.status}`);
+      return null;
+    }
+
+    const text = await resp.text();
+    const safeHeaders = {};
+    for (const [k, v] of resp.headers.entries()) {
+      if (!k.toLowerCase().startsWith("set-cookie")) {
+        safeHeaders[k] = v;
+      }
+    }
+
+    return { text, headers: new Headers(safeHeaders) };
+  } catch (e) {
+    clearTimeout(id);
+    console.warn(`[fetch] ${url} 失败:`, e.message);
+    return null;
+  }
+}
+
 var src_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const host = url.origin;
     const frontendUrl = 'https://raw.githubusercontent.com/bulianglin/psub/main/frontend.html';
     const SUB_BUCKET = env.SUB_BUCKET;
+
+    // 必须设置 BACKEND，且不能指向自己
+    if (!env.BACKEND || env.BACKEND.includes(url.host)) {
+      return new Response('Error: BACKEND not configured or points to self. Please set BACKEND env var to a valid subconverter URL (e.g. https://subconverter.pages.dev).', {
+        status: 500,
+        headers: { 'Content-Type': 'text/plain' }
+      });
+    }
+
     let backend = env.BACKEND.replace(/(https?:\/\/[^/]+).*$/, "$1");
     const subDir = "subscription";
     const pathSegments = url.pathname.split("/").filter((segment) => segment.length > 0);
+
+    // 首页
     if (pathSegments.length === 0) {
       const response = await fetch(frontendUrl);
-      if (response.status !== 200) {
+      if (!response.ok) {
         return new Response('Failed to fetch frontend', { status: response.status });
       }
       const originalHtml = await response.text();
-      const modifiedHtml = originalHtml.replace(/https:\/\/bulianglin2023\.dev/, host);
+      const modifiedHtml = originalHtml.replace(/https:\/\/bulianglin2023\.dev/g, host);
       return new Response(modifiedHtml, {
         status: 200,
-        headers: {
-          'Content-Type': 'text/html',
-        },
+        headers: { 'Content-Type': 'text/html' }
       });
-    } else if (pathSegments[0] === subDir) {
+    }
+
+    // R2 静态文件服务
+    if (pathSegments[0] === subDir) {
       const key = pathSegments[pathSegments.length - 1];
       const object = await SUB_BUCKET.get(key);
       const object_headers = await SUB_BUCKET.get(key + "_headers");
-      if (object === null)
+      if (object === null) {
         return new Response("Not Found", { status: 404 });
-      if ("R2Bucket" === SUB_BUCKET.constructor.name) {
-        const headers = object_headers ? new Headers(await object_headers.json()) : new Headers({ "Content-Type": "text/plain;charset=UTF-8" });
-        return new Response(object.body, { headers });
-      } else {
-        const headers = object_headers ? new Headers(JSON.parse(object_headers)) : new Headers({ "Content-Type": "text/plain;charset=UTF-8" });
-        return new Response(object, { headers });
       }
+      const headers = object_headers
+        ? new Headers(await object_headers.json())
+        : new Headers({ "Content-Type": "text/plain;charset=UTF-8" });
+      return new Response(object.body, { headers });
     }
 
+    // 参数处理
     const urlParam = url.searchParams.get("url");
-    if (!urlParam)
+    if (!urlParam) {
       return new Response("Missing URL parameter", { status: 400 });
+    }
+
     const backendParam = url.searchParams.get("bd");
-    if (backendParam && /^(https?:\/\/[^/]+)[.].+$/g.test(backendParam))
+    if (backendParam && /^(https?:\/\/[^/]+)[.].+$/g.test(backendParam)) {
       backend = backendParam.replace(/(https?:\/\/[^/]+).*$/, "$1");
+    }
+
     const replacements = {};
     const replacedURIs = [];
     const keys = [];
+
     if (urlParam.startsWith("proxies:")) {
       const { format, data } = parseData(urlParam.replace(/\|/g, "\r\n"));
       if ("yaml" === format) {
@@ -2973,39 +2830,34 @@ var src_default = {
       }
     } else {
       const urlParts = urlParam.split("|").filter((part) => part.trim() !== "");
-      if (urlParts.length === 0)
+      if (urlParts.length === 0) {
         return new Response("There are no valid links", { status: 400 });
-      let response, parsedObj;
+      }
+
       for (const url2 of urlParts) {
         const key = generateRandomStr(11);
+
+        let parsedObj;
         if (url2.startsWith("https://") || url2.startsWith("http://")) {
-          response = await fetch(url2, {
-            method: request.method,
-            headers: request.headers,
-            redirect: 'follow', // https://developers.cloudflare.com/workers/runtime-apis/request#constructor
-          });
-          if (!response.ok)
-            continue;
-          const plaintextData = await response.text();
+          const result = await safeFetch(url2, request);
+          if (!result) continue;
+          const { text: plaintextData, headers } = result;
           parsedObj = parseData(plaintextData);
-          await SUB_BUCKET.put(key + "_headers", JSON.stringify(Object.fromEntries(response.headers)));
+          await SUB_BUCKET.put(key + "_headers", JSON.stringify(Object.fromEntries(headers)));
           keys.push(key);
         } else {
           parsedObj = parseData(url2);
         }
-        if (/^(ssr?|vmess1?|trojan|vless|hysteria):\/\//.test(url2)) {
+
+        if (/^(ssr?|vmess1?|trojan|vless|hysteria|hysteria2):\/\//.test(url2)) {
           const newLink = replaceInUri(url2, replacements, false);
-          if (newLink)
-            replacedURIs.push(newLink);
+          if (newLink) replacedURIs.push(newLink);
           continue;
-        } else if ("base64" === parsedObj.format) {
-          const links = parsedObj.data.split(/\r?\n/).filter((link) => link.trim() !== "");
-          const newLinks = [];
-          for (const link of links) {
-            const newLink = replaceInUri(link, replacements, false);
-            if (newLink)
-              newLinks.push(newLink);
-          }
+        }
+
+        if ("base64" === parsedObj.format) {
+          const links = parsedObj.data.split(/\r?\n/).filter(l => l.trim());
+          const newLinks = links.map(l => replaceInUri(l, replacements, false)).filter(Boolean);
           const replacedBase64Data = btoa(newLinks.join("\r\n"));
           if (replacedBase64Data) {
             await SUB_BUCKET.put(key, replacedBase64Data);
@@ -3022,266 +2874,230 @@ var src_default = {
         }
       }
     }
+
+    // 转发到后端 subconverter
     const newUrl = replacedURIs.join("|");
     url.searchParams.set("url", newUrl);
     const modifiedRequest = new Request(backend + url.pathname + url.search, request);
     const rpResponse = await fetch(modifiedRequest);
+
+    // 清理 R2 临时文件
     for (const key of keys) {
       await SUB_BUCKET.delete(key);
+      await SUB_BUCKET.delete(key + "_headers");
     }
+
+    // 后端返回处理
     if (rpResponse.status === 200) {
       const plaintextData = await rpResponse.text();
       try {
         const decodedData = urlSafeBase64Decode(plaintextData);
-        const links = decodedData.split(/\r?\n/).filter((link) => link.trim() !== "");
-        const newLinks = [];
-        for (const link of links) {
-          const newLink = replaceInUri(link, replacements, true);
-          if (newLink)
-            newLinks.push(newLink);
-        }
+        const links = decodedData.split(/\r?\n/).filter(l => l.trim());
+        const newLinks = links.map(l => replaceInUri(l, replacements, true)).filter(Boolean);
         const replacedBase64Data = btoa(newLinks.join("\r\n"));
-        return new Response(replacedBase64Data, rpResponse);
-      } catch (base64Error) {
+        return new Response(replacedBase64Data, {
+          status: 200,
+          headers: rpResponse.headers
+        });
+      } catch {
         const result = plaintextData.replace(
           new RegExp(Object.keys(replacements).join("|"), "g"),
-          (match) => replacements[match] || match
+          match => replacements[match] || match
         );
         return new Response(result, rpResponse);
       }
     }
+
     return rpResponse;
   }
 };
+
+// 节点替换函数
 function replaceInUri(link, replacements, isRecovery) {
-  switch (true) {
-    case link.startsWith("ss://"):
-      return replaceSS(link, replacements, isRecovery);
-    case link.startsWith("ssr://"):
-      return replaceSSR(link, replacements, isRecovery);
-    case link.startsWith("vmess://"):
-    case link.startsWith("vmess1://"):
-      return replaceVmess(link, replacements, isRecovery);
-    case link.startsWith("trojan://"):
-    case link.startsWith("vless://"):
-      return replaceTrojan(link, replacements, isRecovery);
-    case link.startsWith("hysteria://"):
-      return replaceHysteria(link, replacements);
-    default:
-      return;
-  }
+  if (link.startsWith("ss://")) return replaceSS(link, replacements, isRecovery);
+  if (link.startsWith("ssr://")) return replaceSSR(link, replacements, isRecovery);
+  if (link.startsWith("vmess://") || link.startsWith("vmess1://")) return replaceVmess(link, replacements, isRecovery);
+  if (link.startsWith("trojan://") || link.startsWith("vless://")) return replaceTrojan(link, replacements, isRecovery);
+  if (link.startsWith("hysteria://")) return replaceHysteria(link, replacements);
+  if (link.startsWith("hysteria2://")) return replaceHysteria2(link, replacements, isRecovery);
+  return null;
 }
+
 function replaceSSR(link, replacements, isRecovery) {
-  link = link.slice("ssr://".length).replace("\r", "").split("#")[0];
-  link = urlSafeBase64Decode(link);
-  const regexMatch = link.match(/(\S+):(\d+?):(\S+?):(\S+?):(\S+?):(\S+)\//);
-  if (!regexMatch) {
-    return;
-  }
-  const [, server, , , , , password] = regexMatch;
-  let replacedString;
+  let decoded = urlSafeBase64Decode(link.slice("ssr://".length).split("#")[0]);
+  const match = decoded.match(/(\S+):(\d+?):(\S+?):(\S+?):(\S+?):(\S+)\/?.*/);
+  if (!match) return null;
+  const [, server, , , , , password] = match;
   if (isRecovery) {
-    replacedString = "ssr://" + urlSafeBase64Encode(link.replace(password, urlSafeBase64Encode(replacements[urlSafeBase64Decode(password)])).replace(server, replacements[server]));
+    return "ssr://" + urlSafeBase64Encode(
+      decoded.replace(password, urlSafeBase64Encode(replacements[urlSafeBase64Decode(password)])).replace(server, replacements[server])
+    );
   } else {
-    const randomPassword = generateRandomStr(12);
-    const randomDomain = generateRandomStr(12) + ".com";
-    replacements[randomDomain] = server;
-    replacements[randomPassword] = urlSafeBase64Decode(password);
-    replacedString = "ssr://" + urlSafeBase64Encode(link.replace(server, randomDomain).replace(password, urlSafeBase64Encode(randomPassword)));
+    const randPass = generateRandomStr(12);
+    const randDomain = generateRandomStr(12) + ".com";
+    replacements[randDomain] = server;
+    replacements[randPass] = urlSafeBase64Decode(password);
+    return "ssr://" + urlSafeBase64Encode(decoded.replace(server, randDomain).replace(password, urlSafeBase64Encode(randPass)));
   }
-  return replacedString;
 }
+
 function replaceVmess(link, replacements, isRecovery) {
-  const randomUUID = generateRandomUUID();
-  const randomDomain = generateRandomStr(10) + ".com";
-  const regexMatchRocketStyle = link.match(/vmess:\/\/([A-Za-z0-9-_]+)\?(.*)/);
-  if (regexMatchRocketStyle) {
-    const base64Data = regexMatchRocketStyle[1];
-    const regexMatch = urlSafeBase64Decode(base64Data).match(/(.*?):(.*?)@(.*):(.*)/);
-    if (!regexMatch)
-      return;
-    const [, cipher, uuid, server, port] = regexMatch;
-    replacements[randomDomain] = server;
-    replacements[randomUUID] = uuid;
-    const newStr = urlSafeBase64Encode(`${cipher}:${randomUUID}@${randomDomain}:${port}`);
-    const result = link.replace(base64Data, newStr);
-    return result;
+  const randUUID = generateRandomUUID();
+  const randDomain = generateRandomStr(10) + ".com";
+  let decoded;
+
+  if (link.includes("?")) {
+    decoded = urlSafeBase64Decode(link.split("vmess://")[1].split("?")[0]);
+    const match = decoded.match(/(.*?):(.*?)@(.*):(.*)/);
+    if (!match) return null;
+    const [, cipher, uuid, server] = match;
+    replacements[randDomain] = server;
+    replacements[randUUID] = uuid;
+    const newEncoded = urlSafeBase64Encode(`${cipher}:${randUUID}@${randDomain}:${match[4]}`);
+    return link.replace(link.split("vmess://")[1].split("?")[0], newEncoded);
   }
-  const regexMatchKitsunebiStyle = link.match(/vmess1:\/\/(.*?)@(.*):(.*?)\?(.*)/);
-  if (regexMatchKitsunebiStyle) {
-    const [, uuid, server] = regexMatchKitsunebiStyle;
-    replacements[randomDomain] = server;
-    replacements[randomUUID] = uuid;
-    const regex = new RegExp(`${uuid}|${server}`, "g");
-    const result = link.replace(regex, (match) => cReplace(match, uuid, randomUUID, server, randomDomain));
-    return result;
-  }
-  let tempLink = link.replace(/vmess:\/\/|vmess1:\/\//g, "");
+
   try {
-    tempLink = urlSafeBase64Decode(tempLink);
-    const regexMatchQuanStyle = tempLink.match(/(.*?) = (.*)/);
-    if (regexMatchQuanStyle) {
-      const configs = regexMatchQuanStyle[2].split(",");
-      if (configs.length < 6)
-        return;
-      const server2 = configs[1].trim();
-      const uuid2 = configs[4].trim().replace(/^"|"$/g, "");
-      replacements[randomDomain] = server2;
-      replacements[randomUUID] = uuid2;
-      const regex2 = new RegExp(`${uuid2}|${server2}`, "g");
-      const result2 = tempLink.replace(regex2, (match) => cReplace(match, uuid2, randomUUID, server2, randomDomain));
-      return "vmess://" + btoa(result2);
-    }
-    const jsonData = JSON.parse(tempLink);
-    const server = jsonData.add;
-    const uuid = jsonData.id;
+    decoded = urlSafeBase64Decode(link.replace(/vmess1?:\/\//g, ""));
+    const json = JSON.parse(decoded);
+    const server = json.add || json.host;
+    const uuid = json.id;
+    replacements[randDomain] = server;
+    replacements[randUUID] = uuid;
     const regex = new RegExp(`${uuid}|${server}`, "g");
-    let result;
-    if (isRecovery) {
-      result = tempLink.replace(regex, (match) => cReplace(match, uuid, replacements[uuid], server, replacements[server]));
-    } else {
-      replacements[randomDomain] = server;
-      replacements[randomUUID] = uuid;
-      result = tempLink.replace(regex, (match) => cReplace(match, uuid, randomUUID, server, randomDomain));
-    }
+    const result = isRecovery
+      ? decoded.replace(regex, m => m === uuid ? replacements[uuid] : replacements[server])
+      : decoded.replace(regex, m => m === uuid ? randUUID : randDomain);
     return "vmess://" + btoa(result);
-  } catch (error) {
-    return;
+  } catch {
+    return null;
   }
 }
+
 function replaceSS(link, replacements, isRecovery) {
-  const randomPassword = generateRandomStr(12);
-  const randomDomain = randomPassword + ".com";
-  let replacedString;
-  let tempLink = link.slice("ss://".length).split("#")[0];
-  if (tempLink.includes("@")) {
-    const regexMatch1 = tempLink.match(/(\S+?)@(\S+):/);
-    if (!regexMatch1) {
-      return;
-    }
-    const [, base64Data, server] = regexMatch1;
-    const regexMatch2 = urlSafeBase64Decode(base64Data).match(/(\S+?):(\S+)/);
-    if (!regexMatch2) {
-      return;
-    }
-    const [, encryption, password] = regexMatch2;
+  const randPass = generateRandomStr(12);
+  const randDomain = randPass + ".com";
+  let temp = link.slice("ss://".length).split("#")[0];
+
+  if (temp.includes("@")) {
+    const [b64, server] = temp.split("@");
+    const [method, pass] = urlSafeBase64Decode(b64).split(":");
     if (isRecovery) {
-      const newStr = urlSafeBase64Encode(encryption + ":" + replacements[password]);
-      replacedString = link.replace(base64Data, newStr).replace(server, replacements[server]);
+      return link.replace(b64, urlSafeBase64Encode(`${method}:${replacements[pass]}`)).replace(server, replacements[server.split(":")[0]]);
     } else {
-      replacements[randomDomain] = server;
-      replacements[randomPassword] = password;
-      const newStr = urlSafeBase64Encode(encryption + ":" + randomPassword);
-      replacedString = link.replace(base64Data, newStr).replace(/@.*:/, `@${randomDomain}:`);
+      replacements[randDomain] = server.split(":")[0];
+      replacements[randPass] = pass;
+      return link.replace(b64, urlSafeBase64Encode(`${method}:${randPass}`)).replace(/@.*/, `@${randDomain}:`);
     }
   } else {
     try {
-      const decodedValue = urlSafeBase64Decode(tempLink);
-      const regexMatch = decodedValue.match(/(\S+?):(\S+)@(\S+):/);
-      if (!regexMatch) {
-        return;
-      }
-      const [, , password, server] = regexMatch;
-      replacements[randomDomain] = server;
-      replacements[randomPassword] = password;
-      replacedString = "ss://" + urlSafeBase64Encode(decodedValue.replace(/:.*@/, `:${randomPassword}@`).replace(/@.*:/, `@${randomDomain}:`));
-      const hashPart = link.match(/#.*/);
-      if (hashPart)
-        replacedString += hashPart[0];
-    } catch (error) {
-      return;
+      const decoded = urlSafeBase64Decode(temp);
+      const match = decoded.match(/(\S+?):(\S+)@(\S+):/);
+      if (!match) return null;
+      const [, , pass, server] = match;
+      replacements[randDomain] = server;
+      replacements[randPass] = pass;
+      const newEncoded = urlSafeBase64Encode(decoded.replace(/:.*@/, `:${randPass}@`).replace(/@.*:/, `@${randDomain}:`));
+      return "ss://" + newEncoded + (link.includes("#") ? link.split("#")[1] : "");
+    } catch {
+      return null;
     }
   }
-  return replacedString;
 }
+
 function replaceTrojan(link, replacements, isRecovery) {
-  const randomUUID = generateRandomUUID();
-  const randomDomain = generateRandomStr(10) + ".com";
-  const regexMatch = link.match(/(vless|trojan):\/\/(.*?)@(.*):/);
-  if (!regexMatch) {
-    return;
-  }
-  const [, , uuid, server] = regexMatch;
-  replacements[randomDomain] = server;
-  replacements[randomUUID] = uuid;
+  const randUUID = generateRandomUUID();
+  const randDomain = generateRandomStr(10) + ".com";
+  const match = link.match(/(vless|trojan):\/\/(.*?@.*?:)/);
+  if (!match) return null;
+  const [uuid, server] = link.split("@")[0].split("://")[1].split(/[:#?]/);
+  replacements[randDomain] = server;
+  replacements[randUUID] = uuid;
   const regex = new RegExp(`${uuid}|${server}`, "g");
-  if (isRecovery) {
-    return link.replace(regex, (match) => cReplace(match, uuid, replacements[uuid], server, replacements[server]));
-  } else {
-    return link.replace(regex, (match) => cReplace(match, uuid, randomUUID, server, randomDomain));
-  }
+  return isRecovery
+    ? link.replace(regex, m => m === uuid ? replacements[uuid] : replacements[server])
+    : link.replace(regex, m => m === uuid ? randUUID : randDomain);
 }
+
 function replaceHysteria(link, replacements) {
-  const regexMatch = link.match(/hysteria:\/\/(.*):(.*?)\?/);
-  if (!regexMatch) {
-    return;
-  }
-  const server = regexMatch[1];
-  const randomDomain = generateRandomStr(12) + ".com";
-  replacements[randomDomain] = server;
-  return link.replace(server, randomDomain);
+  const match = link.match(/hysteria:\/\/(.*?):/);
+  if (!match) return null;
+  const server = match[1];
+  const randDomain = generateRandomStr(12) + ".com";
+  replacements[randDomain] = server;
+  return link.replace(server, randDomain);
 }
+
+function replaceHysteria2(link, replacements, isRecovery) {
+  const randUUID = generateRandomUUID();
+  const randDomain = generateRandomStr(10) + ".com";
+  const match = link.match(/hysteria2:\/\/(.*?@.*?:)/);
+  if (!match) return null;
+  const [uuid, server] = link.split("@")[0].split("://")[1].split(/[:#?]/);
+  replacements[randDomain] = server;
+  replacements[randUUID] = uuid;
+  const regex = new RegExp(`${uuid}|${server}`, "g");
+  return isRecovery
+    ? link.replace(regex, m => m === uuid ? replacements[uuid] : replacements[server])
+    : link.replace(regex, m => m === uuid ? randUUID : randDomain);
+}
+
 function replaceYAML(yamlObj, replacements) {
-  if (!yamlObj.proxies) {
-    return;
-  }
-  yamlObj.proxies.forEach((proxy) => {
-    const randomPassword = generateRandomStr(12);
-    const randomDomain = randomPassword + ".com";
-    const originalServer = proxy.server;
-    proxy.server = randomDomain;
-    replacements[randomDomain] = originalServer;
+  if (!yamlObj.proxies) return null;
+  yamlObj.proxies.forEach(proxy => {
+    const randPass = generateRandomStr(12);
+    const randDomain = randPass + ".com";
+    const origServer = proxy.server;
+    proxy.server = randDomain;
+    replacements[randDomain] = origServer;
     if (proxy.password) {
-      const originalPassword = proxy.password;
-      proxy.password = randomPassword;
-      replacements[randomPassword] = originalPassword;
+      const orig = proxy.password;
+      proxy.password = randPass;
+      replacements[randPass] = orig;
     }
     if (proxy.uuid) {
-      const originalUUID = proxy.uuid;
-      const randomUUID = generateRandomUUID();
-      proxy.uuid = randomUUID;
-      replacements[randomUUID] = originalUUID;
+      const orig = proxy.uuid;
+      const randUUID = generateRandomUUID();
+      proxy.uuid = randUUID;
+      replacements[randUUID] = orig;
     }
   });
   return yaml.dump(yamlObj);
 }
-function urlSafeBase64Encode(input) {
-  return btoa(input).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+function urlSafeBase64Encode(str) {
+  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function urlSafeBase64Decode(input) {
-  const padded = input + "=".repeat((4 - input.length % 4) % 4);
+
+function urlSafeBase64Decode(str) {
+  const padded = str + "=".repeat((4 - str.length % 4) % 4);
   return atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
 }
+
 function generateRandomStr(len) {
-  return Math.random().toString(36).substring(2, len);
+  return Math.random().toString(36).substring(2, len + 2);
 }
+
 function generateRandomUUID() {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
     const r = Math.random() * 16 | 0;
-    const v = c == "x" ? r : r & 3 | 8;
+    const v = c === "x" ? r : (r & 3 | 8);
     return v.toString(16);
   });
 }
+
 function parseData(data) {
   try {
     return { format: "base64", data: urlSafeBase64Decode(data) };
-  } catch (base64Error) {
+  } catch {
     try {
       return { format: "yaml", data: yaml.load(data) };
-    } catch (yamlError) {
+    } catch {
       return { format: "unknown", data };
     }
   }
 }
-function cReplace(match, ...replacementPairs) {
-  for (let i = 0; i < replacementPairs.length; i += 2) {
-    if (match === replacementPairs[i]) {
-      return replacementPairs[i + 1];
-    }
-  }
-  return match;
-}
+
 export {
   src_default as default
 };
-//# sourceMappingURL=index.js.map
