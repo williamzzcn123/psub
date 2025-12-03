@@ -1457,7 +1457,7 @@ var require_loader = __commonJS({
           } else {
             return true;
           }
-        } else if (ch === 10 || ch === 13) {
+        }  } else if (ch === 10 || ch === 13) {
           captureSegment(state, captureStart, captureEnd, true);
           if (ch === 13 && state.input.charCodeAt(state.position + 1) === 10) {
             state.position++;
@@ -2726,9 +2726,8 @@ async function safeFetch(url, request, timeout = 8000) {
 
   try {
     const resp = await fetch(url, {
-      method: request.method,
+      method: "GET",
       headers: request.headers,
-      body: request.body,
       redirect: "follow",
       signal: controller.signal
     });
@@ -2774,6 +2773,10 @@ var src_default = {
     const subDir = "subscription";
     const pathSegments = url.pathname.split("/").filter((segment) => segment.length > 0);
 
+    // 是否有 R2
+    const hasR2 = !!SUB_BUCKET;
+    const keys = [];
+
     // 首页
     if (pathSegments.length === 0) {
       const response = await fetch(frontendUrl);
@@ -2789,7 +2792,7 @@ var src_default = {
     }
 
     // R2 静态文件服务
-    if (pathSegments[0] === subDir) {
+    if (pathSegments[0] === subDir && hasR2) {
       const key = pathSegments[pathSegments.length - 1];
       const object = await SUB_BUCKET.get(key);
       const object_headers = await SUB_BUCKET.get(key + "_headers");
@@ -2815,11 +2818,10 @@ var src_default = {
 
     const replacements = {};
     const replacedURIs = [];
-    const keys = [];
 
     if (urlParam.startsWith("proxies:")) {
       const { format, data } = parseData(urlParam.replace(/\|/g, "\r\n"));
-      if ("yaml" === format) {
+      if ("yaml" === format && hasR2) {
         const key = generateRandomStr(11);
         const replacedYAMLData = replaceYAML(data, replacements);
         if (replacedYAMLData) {
@@ -2836,15 +2838,22 @@ var src_default = {
 
       for (const url2 of urlParts) {
         const key = generateRandomStr(11);
-
         let parsedObj;
+
         if (url2.startsWith("https://") || url2.startsWith("http://")) {
           const result = await safeFetch(url2, request);
           if (!result) continue;
           const { text: plaintextData, headers } = result;
           parsedObj = parseData(plaintextData);
-          await SUB_BUCKET.put(key + "_headers", JSON.stringify(Object.fromEntries(headers)));
-          keys.push(key);
+
+          if (hasR2) {
+            const safeHeaders = {};
+            for (const [k, v] of headers.entries()) {
+              if (!k.toLowerCase().startsWith("set-cookie")) safeHeaders[k] = v;
+            }
+            await SUB_BUCKET.put(key + "_headers", JSON.stringify(safeHeaders));
+            keys.push(key);
+          }
         } else {
           parsedObj = parseData(url2);
         }
@@ -2855,7 +2864,7 @@ var src_default = {
           continue;
         }
 
-        if ("base64" === parsedObj.format) {
+        if ("base64" === parsedObj.format && hasR2) {
           const links = parsedObj.data.split(/\r?\n/).filter(l => l.trim());
           const newLinks = links.map(l => replaceInUri(l, replacements, false)).filter(Boolean);
           const replacedBase64Data = btoa(newLinks.join("\r\n"));
@@ -2864,7 +2873,7 @@ var src_default = {
             keys.push(key);
             replacedURIs.push(`${host}/${subDir}/${key}`);
           }
-        } else if ("yaml" === parsedObj.format) {
+        } else if ("yaml" === parsedObj.format && hasR2) {
           const replacedYAMLData = replaceYAML(parsedObj.data, replacements);
           if (replacedYAMLData) {
             await SUB_BUCKET.put(key, replacedYAMLData);
@@ -2875,44 +2884,45 @@ var src_default = {
       }
     }
 
-// 转发到 subconverter
-const newUrl = replacedURIs.join("|");
-url.searchParams.set("url", newUrl);
+    // 转发到 subconverter（伪装浏览器）
+    const newUrl = replacedURIs.join("|");
+    url.searchParams.set("url", newUrl);
 
-// 构造浏览器伪装请求
-const proxyHeaders = new Headers({
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
-  'Referer': host + '/',
-  'Origin': host,
-  'Accept': 'text/yaml,application/yaml,*/*;q=0.9',
-  'Accept-Language': 'en-US,en;q=0.9',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Connection': 'keep-alive',
-});
+    const proxyHeaders = new Headers({
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+      'Referer': host + '/',
+      'Origin': host,
+      'Accept': 'text/yaml,application/yaml,*/*;q=0.9',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+    });
 
-// 保留原始必要 headers（排除 CF 内部）
-for (const [k, v] of request.headers.entries()) {
-  const key = k.toLowerCase();
-  if (!['host', 'cf-ray', 'cf-connecting-ip', 'x-forwarded-for'].includes(key)) {
-    proxyHeaders.set(k, v);
-  }
-}
-
-const modifiedRequest = new Request(backend + url.pathname + url.search, {
-  method: request.method,
-  headers: proxyHeaders,
-  body: request.body
-});
-
-const rpResponse = await fetch(modifiedRequest);
-
-    // 清理 R2 临时文件
-    for (const key of keys) {
-      await SUB_BUCKET.delete(key);
-      await SUB_BUCKET.delete(key + "_headers");
+    // 保留原始必要 headers（排除 CF 内部）
+    for (const [k, v] of request.headers.entries()) {
+      const key = k.toLowerCase();
+      if (!['host', 'cf-ray', 'cf-connecting-ip', 'x-forwarded-for', 'cookie'].includes(key)) {
+        proxyHeaders.set(k, v);
+      }
     }
 
-    // 后端返回处理
+    const modifiedRequest = new Request(backend + url.pathname + url.search, {
+      method: request.method,
+      headers: proxyHeaders,
+      body: request.body
+    });
+
+    const rpResponse = await fetch(modifiedRequest);
+
+    // 清理 R2 临时文件
+    if (hasR2 && keys.length > 0) {
+      for (const key of keys) {
+        await SUB_BUCKET.delete(key);
+        await SUB_BUCKET.delete(key + "_headers");
+      }
+    }
+
+    // 处理返回
     if (rpResponse.status === 200) {
       const plaintextData = await rpResponse.text();
       try {
